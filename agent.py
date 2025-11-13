@@ -31,7 +31,8 @@ from task_tool import _create_task_tool, SubAgent
 def create_marketing_campaign_agent(
     model_name: str = "openai:gpt-4o",
     max_iterations: int = 3,
-    performance_threshold: float = 65.0
+    performance_threshold: float = 65.0,
+    concurrency_limit=1  # assicura che le chiamate siano seriali
 ):
     """Create the complete marketing campaign multi-agent system.
     
