@@ -1,12 +1,19 @@
 import os
 from dotenv import load_dotenv
+import streamlit as st
 
-# Load environment variables
+# 1️⃣ Prova a caricare da .env (solo in locale)
 load_dotenv()
 
-# Verify API keys are set
-assert os.getenv("OPENAI_API_KEY"), "Please set OPENAI_API_KEY in .env file"
-assert os.getenv("TAVILY_API_KEY"), "Please set TAVILY_API_KEY in .env file"
+# 2️⃣ Poi, se in cloud, carica da Streamlit Secrets
+if "OPENAI_API_KEY" in st.secrets:
+    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+if "TAVILY_API_KEY" in st.secrets:
+    os.environ["TAVILY_API_KEY"] = st.secrets["TAVILY_API_KEY"]
+
+# 3️⃣ Verifica che ci siano
+assert os.getenv("OPENAI_API_KEY"), "Missing OPENAI_API_KEY — check .env or Streamlit Secrets"
+assert os.getenv("TAVILY_API_KEY"), "Missing TAVILY_API_KEY — check .env or Streamlit Secrets"
 
 print("✅ Environment configured successfully")
 
