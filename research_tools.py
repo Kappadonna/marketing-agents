@@ -3,6 +3,8 @@
 This module provides search and content processing utilities for the marketing agents,
 including web search capabilities and content summarization tools optimized for
 marketing research (audience insights, competitor analysis, trends).
+
+FIXED VERSION - Lazy initialization to work with Streamlit Cloud secrets
 """
 import os
 from datetime import datetime
@@ -23,9 +25,38 @@ from typing_extensions import Annotated, Literal
 from prompts import SUMMARIZE_WEB_SEARCH
 from state import MarketingCampaignState
 
-# Summarization model 
-summarization_model = init_chat_model(model="openai:gpt-4o-mini")
-tavily_client = TavilyClient()
+# ============================================================================
+# LAZY INITIALIZATION - Fixed for Streamlit Cloud
+# ============================================================================
+# Instead of initializing at module level, we use lazy initialization
+# This allows Streamlit to load secrets before models are created
+
+_summarization_model = None
+_tavily_client = None
+
+
+def get_summarization_model():
+    """Lazy initialization of summarization model.
+    
+    This function creates the model only when first needed,
+    allowing Streamlit secrets to be loaded first.
+    """
+    global _summarization_model
+    if _summarization_model is None:
+        _summarization_model = init_chat_model(model="openai:gpt-4o-mini")
+    return _summarization_model
+
+
+def get_tavily_client():
+    """Lazy initialization of Tavily client.
+    
+    This function creates the client only when first needed,
+    allowing Streamlit secrets to be loaded first.
+    """
+    global _tavily_client
+    if _tavily_client is None:
+        _tavily_client = TavilyClient()
+    return _tavily_client
 
 
 class Summary(BaseModel):
@@ -56,6 +87,9 @@ def run_tavily_search(
     Returns:
         Search results dictionary
     """
+    # Use lazy initialization
+    tavily_client = get_tavily_client()
+    
     result = tavily_client.search(
         search_query,
         max_results=max_results,
@@ -75,6 +109,9 @@ def summarize_webpage_content(webpage_content: str) -> Summary:
         Summary object with filename and summary
     """
     try:
+        # Use lazy initialization
+        summarization_model = get_summarization_model()
+        
         # Set up structured output model for summarization
         structured_model = summarization_model.with_structured_output(Summary)
 
