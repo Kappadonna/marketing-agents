@@ -2,12 +2,11 @@
 Marketing Campaign Multi-Agent System - Streamlit Dashboard
 ============================================================
 
-VERSION 3.0 - REAL-TIME STREAMING:
-✅ Real-time updates with st.status() and threading
-✅ Non-blocking UI during campaign execution
-✅ Live progress tracking with expandable status
-✅ Accurate task counting and file monitoring
-✅ Auto-refresh every 2 seconds during execution
+VERSION 3.1 - FIXED SESSION STATE IN THREADS:
+✅ Thread-safe state management with Queue
+✅ Real-time updates without ScriptRunContext errors
+✅ Shared state dictionary for thread communication
+✅ Non-blocking UI with proper state synchronization
 """
 
 import os
@@ -18,6 +17,8 @@ import threading
 import time
 from datetime import datetime
 from io import BytesIO
+from queue import Queue
+from typing import Dict, Any
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -51,17 +52,9 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* Main theme */
-    .main {
-        background-color: #1e1e1e;
-        color: #ffffff;
-    }
+    .main { background-color: #1e1e1e; color: #ffffff; }
+    .stMarkdown { color: #ffffff; }
     
-    .stMarkdown {
-        color: #ffffff;
-    }
-    
-    /* Metric cards */
     .metric-card {
         background: #2d2d2d;
         padding: 20px;
@@ -71,7 +64,6 @@ st.markdown("""
         color: #ffffff;
     }
     
-    /* Agent cards */
     .agent-card {
         background: #2d2d2d;
         padding: 20px;
@@ -81,15 +73,8 @@ st.markdown("""
         transition: all 0.3s ease;
     }
     
-    .agent-card h4 {
-        color: #ffffff !important;
-        margin: 0 0 10px 0;
-    }
-    
-    .agent-card p {
-        color: #b0b0b0 !important;
-        margin: 5px 0;
-    }
+    .agent-card h4 { color: #ffffff !important; margin: 0 0 10px 0; }
+    .agent-card p { color: #b0b0b0 !important; margin: 5px 0; }
     
     .agent-active {
         border-color: #28a745;
@@ -97,17 +82,13 @@ st.markdown("""
         animation: pulse 2s infinite;
     }
     
-    .agent-idle {
-        border-color: #6c757d;
-        opacity: 0.7;
-    }
+    .agent-idle { border-color: #6c757d; opacity: 0.7; }
     
     @keyframes pulse {
         0%, 100% { box-shadow: 0 0 20px rgba(40, 167, 69, 0.4); }
         50% { box-shadow: 0 0 30px rgba(40, 167, 69, 0.6); }
     }
     
-    /* Live indicator */
     .live-indicator {
         display: inline-flex;
         align-items: center;
@@ -125,7 +106,6 @@ st.markdown("""
         50% { opacity: 0.7; }
     }
     
-    /* Event items */
     .event-item {
         background: #2d2d2d;
         padding: 10px 15px;
@@ -137,14 +117,8 @@ st.markdown("""
     }
     
     @keyframes slideIn {
-        from {
-            opacity: 0;
-            transform: translateX(-20px);
-        }
-        to {
-            opacity: 1;
-            transform: translateX(0);
-        }
+        from { opacity: 0; transform: translateX(-20px); }
+        to { opacity: 1; transform: translateX(0); }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -175,35 +149,83 @@ def setup_environment():
 setup_environment()
 
 # ============================================================================
+# SHARED STATE FOR THREAD COMMUNICATION
+# ============================================================================
+
+class SharedState:
+    """Thread-safe state container for campaign execution"""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.data: Dict[str, Any] = {
+            'campaign_state': None,
+            'logs': [],
+            'events': [],
+            'active_agent': None,
+            'current_phase': 'Idle',
+            'agent_status': {
+                'project-manager': 'idle',
+                'strategy-planner': 'idle',
+                'content-creator': 'idle',
+                'analytics-agent': 'idle'
+            },
+            'total_tasks': 0,
+            'completed_tasks': 0,
+            'current_iteration': 1,
+            'files_count': 0,
+            'campaign_running': False,
+            'campaign_error': None,
+            'last_update': datetime.now(),
+        }
+    
+    def get(self, key: str, default=None):
+        with self.lock:
+            return self.data.get(key, default)
+    
+    def set(self, key: str, value: Any):
+        with self.lock:
+            self.data[key] = value
+            self.data['last_update'] = datetime.now()
+    
+    def update(self, updates: dict):
+        with self.lock:
+            self.data.update(updates)
+            self.data['last_update'] = datetime.now()
+    
+    def append_log(self, message: str, level: str = "info"):
+        with self.lock:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.data['logs'].append({
+                "timestamp": timestamp,
+                "message": message,
+                "level": level
+            })
+            self.data['last_update'] = datetime.now()
+    
+    def append_event(self, event_type: str, agent: str, description: str, data: dict = None):
+        with self.lock:
+            self.data['events'].append({
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                "type": event_type,
+                "agent": agent,
+                "description": description,
+                "data": data or {}
+            })
+            self.data['last_update'] = datetime.now()
+
+# ============================================================================
 # SESSION STATE INITIALIZATION
 # ============================================================================
 
 def init_session_state():
     """Initialize session state variables"""
+    if 'shared_state' not in st.session_state:
+        st.session_state.shared_state = SharedState()
+    
     defaults = {
-        'campaign_running': False,
-        'campaign_state': None,
         'agent': None,
-        'logs': [],
-        'events': [],
-        'active_agent': None,
-        'current_phase': 'Idle',
-        'agent_status': {
-            'project-manager': 'idle',
-            'strategy-planner': 'idle',
-            'content-creator': 'idle',
-            'analytics-agent': 'idle'
-        },
         'template_config': {},
-        'last_update': datetime.now(),
-        'total_tasks': 0,
-        'completed_tasks': 0,
-        'current_iteration': 1,
         'max_iterations': 2,
-        'files_count': 0,
-        'last_event': None,
         'campaign_thread': None,
-        'campaign_error': None,
     }
     
     for key, value in defaults.items():
@@ -213,58 +235,133 @@ def init_session_state():
 init_session_state()
 
 # ============================================================================
-# LOGGING AND EVENT TRACKING
+# HELPER FUNCTIONS
 # ============================================================================
 
-def add_log(message: str, level: str = "info"):
-    """Add a log entry with timestamp"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    log_entry = {
-        "timestamp": timestamp,
-        "message": message,
-        "level": level
-    }
-    st.session_state.logs.append(log_entry)
-    st.session_state.last_update = datetime.now()
+def sync_from_shared_state():
+    """Sync data from shared state to session state for display"""
+    shared = st.session_state.shared_state
+    
+    # Create convenience accessors
+    st.session_state.campaign_state = shared.get('campaign_state')
+    st.session_state.logs = shared.get('logs', [])
+    st.session_state.events = shared.get('events', [])
+    st.session_state.active_agent = shared.get('active_agent')
+    st.session_state.current_phase = shared.get('current_phase', 'Idle')
+    st.session_state.agent_status = shared.get('agent_status', {})
+    st.session_state.total_tasks = shared.get('total_tasks', 0)
+    st.session_state.completed_tasks = shared.get('completed_tasks', 0)
+    st.session_state.current_iteration = shared.get('current_iteration', 1)
+    st.session_state.files_count = shared.get('files_count', 0)
+    st.session_state.campaign_running = shared.get('campaign_running', False)
+    st.session_state.campaign_error = shared.get('campaign_error')
 
-def add_event(event_type: str, agent: str, description: str, data: dict = None):
-    """Add an event to the event feed"""
-    event = {
-        "timestamp": datetime.now().strftime("%H:%M:%S"),
-        "type": event_type,
-        "agent": agent,
-        "description": description,
-        "data": data or {}
-    }
-    st.session_state.events.append(event)
-    st.session_state.last_event = event
-    st.session_state.last_update = datetime.now()
+# ============================================================================
+# CAMPAIGN EXECUTION - THREAD-SAFE VERSION
+# ============================================================================
 
-def set_agent_active(agent_name: str):
-    """Mark an agent as active"""
-    st.session_state.active_agent = agent_name
-    st.session_state.agent_status[agent_name] = 'active'
-    st.session_state.last_update = datetime.now()
-
-def set_agent_idle(agent_name: str):
-    """Mark an agent as idle"""
-    st.session_state.agent_status[agent_name] = 'idle'
-    if st.session_state.active_agent == agent_name:
-        st.session_state.active_agent = None
-    st.session_state.last_update = datetime.now()
-
-def update_task_counts():
-    """Update task completion counts from state"""
-    if st.session_state.campaign_state:
-        todos = st.session_state.campaign_state.get('todos', [])
-        st.session_state.total_tasks = len(todos)
-        st.session_state.completed_tasks = len([t for t in todos if t.get('status') == 'completed'])
+async def run_campaign_async(agent, campaign_input, config, shared_state: SharedState):
+    """Run campaign asynchronously with thread-safe state updates"""
+    try:
+        shared_state.append_log("Starting campaign execution...", "info")
+        shared_state.append_event("start", "system", "🚀 Campaign started", {})
+        shared_state.set('current_phase', "Initializing")
+        shared_state.set('campaign_running', True)
         
-        files = st.session_state.campaign_state.get('files', {})
-        st.session_state.files_count = len([f for f in files.keys() if not f.startswith('URL_error')])
+        async for graph_name, stream_mode, event in agent.astream(
+            campaign_input,
+            stream_mode=["updates", "values"],
+            subgraphs=True,
+            config=config
+        ):
+            if stream_mode == "updates":
+                node, result = list(event.items())[0]
+                
+                # Detect agent activity
+                agent_name = "project-manager"
+                
+                if 'messages' in result and result['messages']:
+                    last_message = result['messages'][-1]
+                    
+                    # Tool calls indicate delegation
+                    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+                        for tool_call in last_message.tool_calls:
+                            if tool_call.get('name') == 'task':
+                                args = tool_call.get('args', {})
+                                subagent = args.get('subagent_type', '')
+                                if subagent:
+                                    agent_name = subagent
+                                    shared_state.update({
+                                        'active_agent': agent_name,
+                                        'current_phase': f"Running {agent_name}"
+                                    })
+                                    agent_status = shared_state.get('agent_status', {})
+                                    agent_status[agent_name] = 'active'
+                                    shared_state.set('agent_status', agent_status)
+                                    shared_state.append_event("delegation", "project-manager",
+                                                            f"➡️ Delegated to {agent_name}", {'subagent': agent_name})
+                    
+                    # Tool results indicate completion
+                    if hasattr(last_message, 'content'):
+                        content_str = str(last_message.content)
+                        if "✅" in content_str or "complete" in content_str.lower():
+                            shared_state.append_event("completion", agent_name, "✅ Task completed", {})
+                            agent_status = shared_state.get('agent_status', {})
+                            agent_status[agent_name] = 'idle'
+                            shared_state.set('agent_status', agent_status)
+                            if shared_state.get('active_agent') == agent_name:
+                                shared_state.set('active_agent', None)
+                
+                # Update campaign state
+                shared_state.set('campaign_state', dict(result))
+                
+                # Update task counts
+                campaign_state = shared_state.get('campaign_state')
+                if campaign_state:
+                    todos = campaign_state.get('todos', [])
+                    shared_state.update({
+                        'total_tasks': len(todos),
+                        'completed_tasks': len([t for t in todos if t.get('status') == 'completed']),
+                        'files_count': len([f for f in campaign_state.get('files', {}).keys() if not f.startswith('URL_error')]),
+                        'current_iteration': campaign_state.get('iteration_count', 1)
+                    })
+            
+            # Save final state
+            if stream_mode == "values" and len(graph_name) == 0:
+                shared_state.set('campaign_state', dict(event))
+                campaign_state = shared_state.get('campaign_state')
+                if campaign_state:
+                    todos = campaign_state.get('todos', [])
+                    shared_state.update({
+                        'total_tasks': len(todos),
+                        'completed_tasks': len([t for t in todos if t.get('status') == 'completed']),
+                        'files_count': len([f for f in campaign_state.get('files', {}).keys() if not f.startswith('URL_error')]),
+                        'current_iteration': campaign_state.get('iteration_count', 1)
+                    })
         
-        st.session_state.current_iteration = st.session_state.campaign_state.get('iteration_count', 1)
-        st.session_state.last_update = datetime.now()
+        shared_state.append_log("Campaign completed successfully!", "success")
+        shared_state.append_event("completion", "system", "🎉 Campaign completed", {})
+        shared_state.update({
+            'current_phase': "Completed",
+            'campaign_running': False
+        })
+        
+    except Exception as e:
+        shared_state.append_log(f"Campaign error: {str(e)}", "error")
+        shared_state.append_event("error", "system", f"❌ Error: {str(e)}", {})
+        shared_state.update({
+            'campaign_error': str(e),
+            'campaign_running': False
+        })
+
+def run_campaign_thread(agent, campaign_input, config, shared_state: SharedState):
+    """Run campaign in background thread"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(run_campaign_async(agent, campaign_input, config, shared_state))
+    finally:
+        loop.close()
 
 # ============================================================================
 # RENDERING FUNCTIONS
@@ -360,7 +457,6 @@ def render_event_feed():
         st.info("No events yet")
         return
     
-    # Show last 10 events
     for event in reversed(st.session_state.events[-10:]):
         st.markdown(f"""
         <div class="event-item">
@@ -411,7 +507,6 @@ def render_files_by_iteration():
         else:
             other_files.append(filename)
     
-    # Render by iteration
     for iter_num in sorted(iterations.keys()):
         with st.expander(f"📂 Iteration {iter_num} ({len(iterations[iter_num])} files)"):
             for filename in sorted(iterations[iter_num]):
@@ -432,8 +527,6 @@ def render_campaign_images():
         return
     
     files = st.session_state.campaign_state.get('files', {})
-    
-    # Find image data files
     image_files = [f for f in files.keys() if 'image_data' in f or 'chart_data' in f]
     
     if not image_files:
@@ -459,84 +552,6 @@ def render_campaign_images():
             st.warning(f"Could not display {img_file}")
 
 # ============================================================================
-# CAMPAIGN EXECUTION - THREADING VERSION
-# ============================================================================
-
-async def run_campaign_async(campaign_input, config):
-    """Run campaign asynchronously with real-time updates"""
-    try:
-        agent = st.session_state.agent
-        
-        add_log("Starting campaign execution...", "info")
-        add_event("start", "system", "🚀 Campaign started", {})
-        st.session_state.current_phase = "Initializing"
-        
-        async for graph_name, stream_mode, event in agent.astream(
-            campaign_input,
-            stream_mode=["updates", "values"],
-            subgraphs=True,
-            config=config
-        ):
-            if stream_mode == "updates":
-                node, result = list(event.items())[0]
-                
-                # Detect agent from node name or messages
-                agent_name = "project-manager"
-                
-                if 'messages' in result and result['messages']:
-                    last_message = result['messages'][-1]
-                    
-                    # Tool calls indicate delegation
-                    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-                        for tool_call in last_message.tool_calls:
-                            if tool_call.get('name') == 'task':
-                                args = tool_call.get('args', {})
-                                subagent = args.get('subagent_type', '')
-                                if subagent:
-                                    agent_name = subagent
-                                    set_agent_active(agent_name)
-                                    add_event("delegation", "project-manager",
-                                            f"➡️ Delegated to {agent_name}", {'subagent': agent_name})
-                                    st.session_state.current_phase = f"Running {agent_name}"
-                    
-                    # Tool results indicate completion
-                    if hasattr(last_message, 'content'):
-                        content_str = str(last_message.content)
-                        if "✅" in content_str or "complete" in content_str.lower():
-                            add_event("completion", agent_name, "✅ Task completed", {})
-                            set_agent_idle(agent_name)
-                
-                # Update state
-                st.session_state.campaign_state = dict(result)
-                update_task_counts()
-            
-            # Save final state
-            if stream_mode == "values" and len(graph_name) == 0:
-                st.session_state.campaign_state = dict(event)
-                update_task_counts()
-        
-        add_log("Campaign completed successfully!", "success")
-        add_event("completion", "system", "🎉 Campaign completed", {})
-        st.session_state.current_phase = "Completed"
-        st.session_state.campaign_running = False
-        
-    except Exception as e:
-        add_log(f"Campaign error: {str(e)}", "error")
-        add_event("error", "system", f"❌ Error: {str(e)}", {})
-        st.session_state.campaign_error = str(e)
-        st.session_state.campaign_running = False
-        raise
-
-def run_campaign_thread(campaign_input, config):
-    """Run campaign in background thread"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(run_campaign_async(campaign_input, config))
-    finally:
-        loop.close()
-
-# ============================================================================
 # SIDEBAR - CAMPAIGN CONFIGURATION
 # ============================================================================
 
@@ -546,18 +561,9 @@ with st.sidebar:
     # Template selection
     st.subheader("📋 Templates")
     
-    category = st.selectbox(
-        "Category",
-        options=list(CATEGORIES.keys()),
-        index=0
-    )
-    
+    category = st.selectbox("Category", options=list(CATEGORIES.keys()), index=0)
     campaign_options = CATEGORIES[category]
-    selected_campaign = st.selectbox(
-        "Select Template",
-        options=campaign_options,
-        index=0
-    )
+    selected_campaign = st.selectbox("Select Template", options=campaign_options, index=0)
     
     if st.button("📥 Load Template"):
         config = get_campaign_config(selected_campaign)
@@ -569,13 +575,7 @@ with st.sidebar:
     
     # Model settings
     st.subheader("🤖 Model Settings")
-    
-    model_choice = st.selectbox(
-        "LLM Model",
-        options=["openai:gpt-4o-mini", "openai:gpt-4o"],
-        index=0
-    )
-    
+    model_choice = st.selectbox("LLM Model", options=["openai:gpt-4o-mini", "openai:gpt-4o"], index=0)
     max_iterations = st.slider("Max Iterations", 1, 5, 2)
     performance_threshold = st.slider("Performance Threshold", 50.0, 95.0, 75.0, 5.0)
     
@@ -583,31 +583,12 @@ with st.sidebar:
     
     # Product details
     st.subheader("📦 Product Details")
-    
     template = st.session_state.get('template_config', {})
     
-    product_name = st.text_input(
-        "Product Name",
-        value=template.get('product_name', "NeuroBuds Pro")
-    )
-    
-    product_info = st.text_area(
-        "Product Description",
-        value=template.get('product_info', """AI-powered wireless earbuds"""),
-        height=150
-    )
-    
-    campaign_goal = st.text_area(
-        "Campaign Goal",
-        value=template.get('campaign_goal', "Generate awareness and engagement"),
-        height=80
-    )
-    
-    target_audience = st.text_area(
-        "Target Audience",
-        value=template.get('target_audience', "Tech enthusiasts aged 25-40"),
-        height=80
-    )
+    product_name = st.text_input("Product Name", value=template.get('product_name', "NeuroBuds Pro"))
+    product_info = st.text_area("Product Description", value=template.get('product_info', """AI-powered wireless earbuds"""), height=150)
+    campaign_goal = st.text_area("Campaign Goal", value=template.get('campaign_goal', "Generate awareness"), height=80)
+    target_audience = st.text_area("Target Audience", value=template.get('target_audience', "Tech enthusiasts aged 25-40"), height=80)
     
     st.divider()
     
@@ -615,11 +596,7 @@ with st.sidebar:
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("🚀 START", 
-                    use_container_width=True, 
-                    disabled=st.session_state.campaign_running,
-                    type="primary"):
-            
+        if st.button("🚀 START", use_container_width=True, disabled=st.session_state.campaign_running, type="primary"):
             # Initialize agent
             st.session_state.agent = create_marketing_campaign_agent(
                 model_name=model_choice,
@@ -636,47 +613,41 @@ with st.sidebar:
                 performance_threshold=performance_threshold
             )
             
-            # Reset state
-            st.session_state.campaign_running = True
-            st.session_state.events = []
-            st.session_state.logs = []
-            st.session_state.completed_tasks = 0
-            st.session_state.total_tasks = 0
+            # Reset shared state
+            st.session_state.shared_state = SharedState()
+            st.session_state.shared_state.set('campaign_running', True)
             st.session_state.max_iterations = max_iterations
-            st.session_state.campaign_error = None
             
             # Run in background thread
             config = {"recursion_limit": 200}
             thread = threading.Thread(
                 target=run_campaign_thread,
-                args=(campaign_input, config),
+                args=(st.session_state.agent, campaign_input, config, st.session_state.shared_state),
                 daemon=True
             )
             thread.start()
             st.session_state.campaign_thread = thread
             
-            add_log("Campaign started in background", "info")
+            st.session_state.shared_state.append_log("Campaign started in background", "info")
             st.rerun()
     
     with col2:
-        if st.button("⏹️ STOP", 
-                    use_container_width=True, 
-                    disabled=not st.session_state.campaign_running):
-            st.session_state.campaign_running = False
-            add_log("Campaign stopped by user", "warning")
+        if st.button("⏹️ STOP", use_container_width=True, disabled=not st.session_state.campaign_running):
+            st.session_state.shared_state.set('campaign_running', False)
+            st.session_state.shared_state.append_log("Campaign stopped by user", "warning")
             st.rerun()
     
     if st.button("🗑️ Clear All", use_container_width=True):
-        for key in ['campaign_state', 'logs', 'events']:
-            st.session_state[key] = None if key == 'campaign_state' else []
-        st.session_state.campaign_running = False
-        st.session_state.completed_tasks = 0
-        st.session_state.total_tasks = 0
+        st.session_state.shared_state = SharedState()
+        st.session_state.agent = None
         st.rerun()
 
 # ============================================================================
 # MAIN DASHBOARD
 # ============================================================================
+
+# Sync from shared state
+sync_from_shared_state()
 
 # Header
 render_campaign_header()
@@ -697,18 +668,10 @@ render_live_metrics()
 st.divider()
 
 # Tabs
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📊 Overview",
-    "🤖 Agents",
-    "📁 Files",
-    "🖼️ Images",
-    "📝 Logs",
-    "📦 Export"
-])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Overview", "🤖 Agents", "📁 Files", "🖼️ Images", "📝 Logs", "📦 Export"])
 
 with tab1:
     st.subheader("📊 Campaign Overview")
-    
     if st.session_state.campaign_state:
         todos = st.session_state.campaign_state.get('todos', [])
         if todos:
@@ -735,7 +698,6 @@ with tab5:
 
 with tab6:
     st.subheader("📦 Export Results")
-    
     if not st.session_state.campaign_state:
         st.info("⚠️ No data to export")
     else:
@@ -754,7 +716,6 @@ with tab6:
 # ============================================================================
 
 if st.session_state.campaign_running:
-    # Auto-refresh every 2 seconds
     time.sleep(2)
     st.rerun()
 
@@ -763,4 +724,5 @@ if st.session_state.campaign_running:
 # ============================================================================
 
 st.divider()
-st.caption(f"Marketing Campaign System v3.0 | Last update: {st.session_state.last_update.strftime('%H:%M:%S')}")
+last_update = st.session_state.shared_state.get('last_update', datetime.now())
+st.caption(f"Marketing Campaign System v3.1 | Last update: {last_update.strftime('%H:%M:%S')}")
