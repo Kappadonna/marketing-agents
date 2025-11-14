@@ -1,6 +1,7 @@
 """Image generation tools for marketing campaigns.
 
-VERSION 2.1 - CRITICAL FIX:
+VERSION 2.2 - FIXED FOR STREAMLIT CLOUD:
+- Lazy initialization of OpenAI client to work with Streamlit secrets
 - Added protection against agent overwriting tool-generated files
 - Files are marked as protected and cannot be manually overwritten
 - Increased timeout to 90 seconds
@@ -21,7 +22,25 @@ from openai import OpenAI
 from rich.console import Console
 from state import MarketingCampaignState
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# ============================================================================
+# LAZY INITIALIZATION - Fixed for Streamlit Cloud
+# ============================================================================
+# Instead of initializing at module level, we use lazy initialization
+# This allows Streamlit to load secrets before the client is created
+
+_openai_client = None
+
+def get_openai_client():
+    """Lazy initialization of OpenAI client.
+    
+    This function creates the client only when first needed,
+    allowing Streamlit secrets to be loaded first.
+    """
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    return _openai_client
+
 console = Console()
 
 def get_today_str() -> str:
@@ -37,7 +56,8 @@ def generate_marketing_image(
 ) -> Command:
     """Generate marketing image with DALL-E 3 and comprehensive validation.
     
-    VERSION 2.0 ENHANCEMENTS:
+    VERSION 2.2 ENHANCEMENTS:
+    - Lazy initialization of OpenAI client (Streamlit Cloud compatible)
     - Extended timeout (90s instead of 30s)
     - Exponential backoff retry strategy
     - Multi-level validation (PNG header, size, base64)
@@ -64,6 +84,9 @@ def generate_marketing_image(
         # ===================================================================
         console.print(f"[blue]🎨 Generating image with DALL-E 3...[/blue]")
         console.print(f"[dim]   Style: {image_style} | Size: {image_size}[/dim]")
+        
+        # Use lazy initialization
+        client = get_openai_client()
         
         response = client.images.generate(
             model="dall-e-3", 
@@ -123,7 +146,7 @@ def generate_marketing_image(
                 if attempt < max_retries - 1:
                     # Exponential backoff: 5s, 10s, 20s
                     retry_delay = 5 * (2 ** attempt)
-                    console.print(f"[yellow]⚠️  Retry {attempt + 1}: {e}[/yellow]")
+                    console.print(f"[yellow]⚠️ Retry {attempt + 1}: {e}[/yellow]")
                     console.print(f"[dim]   Waiting {retry_delay}s before retry...[/dim]")
                     time.sleep(retry_delay)
                 else:
@@ -144,7 +167,7 @@ def generate_marketing_image(
         # ===================================================================
         expected_min_b64_length = 50000
         if len(image_b64) < expected_min_b64_length:
-            console.print(f"[yellow]⚠️  Base64 shorter than expected: {len(image_b64)} chars (expected > {expected_min_b64_length})[/yellow]")
+            console.print(f"[yellow]⚠️ Base64 shorter than expected: {len(image_b64)} chars (expected > {expected_min_b64_length})[/yellow]")
         else:
             console.print(f"[green]✅ Base64 encoded: {len(image_b64):,} characters[/green]")
         
