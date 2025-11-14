@@ -2,11 +2,11 @@
 Marketing Campaign Multi-Agent System - Streamlit Dashboard
 ============================================================
 
-VERSION 3.1 - FIXED SESSION STATE IN THREADS:
-✅ Thread-safe state management with Queue
-✅ Real-time updates without ScriptRunContext errors
-✅ Shared state dictionary for thread communication
-✅ Non-blocking UI with proper state synchronization
+VERSION 3.2 - FIXED BUTTON ATTRIBUTE ERROR:
+✅ campaign_running in st.session_state for widgets
+✅ Thread-safe state management with SharedState
+✅ Real-time updates without crashes
+✅ All state properly initialized
 """
 
 import os
@@ -17,7 +17,6 @@ import threading
 import time
 from datetime import datetime
 from io import BytesIO
-from queue import Queue
 from typing import Dict, Any
 
 import streamlit as st
@@ -172,7 +171,6 @@ class SharedState:
             'completed_tasks': 0,
             'current_iteration': 1,
             'files_count': 0,
-            'campaign_running': False,
             'campaign_error': None,
             'last_update': datetime.now(),
         }
@@ -221,11 +219,29 @@ def init_session_state():
     if 'shared_state' not in st.session_state:
         st.session_state.shared_state = SharedState()
     
+    # CRITICAL: Initialize campaign_running in st.session_state for widgets
     defaults = {
         'agent': None,
         'template_config': {},
         'max_iterations': 2,
         'campaign_thread': None,
+        'campaign_running': False,  # ← CRITICAL: Must be in st.session_state for buttons
+        'campaign_state': None,
+        'logs': [],
+        'events': [],
+        'active_agent': None,
+        'current_phase': 'Idle',
+        'agent_status': {
+            'project-manager': 'idle',
+            'strategy-planner': 'idle',
+            'content-creator': 'idle',
+            'analytics-agent': 'idle'
+        },
+        'total_tasks': 0,
+        'completed_tasks': 0,
+        'current_iteration': 1,
+        'files_count': 0,
+        'campaign_error': None,
     }
     
     for key, value in defaults.items():
@@ -242,7 +258,7 @@ def sync_from_shared_state():
     """Sync data from shared state to session state for display"""
     shared = st.session_state.shared_state
     
-    # Create convenience accessors
+    # Update all display state
     st.session_state.campaign_state = shared.get('campaign_state')
     st.session_state.logs = shared.get('logs', [])
     st.session_state.events = shared.get('events', [])
@@ -253,7 +269,6 @@ def sync_from_shared_state():
     st.session_state.completed_tasks = shared.get('completed_tasks', 0)
     st.session_state.current_iteration = shared.get('current_iteration', 1)
     st.session_state.files_count = shared.get('files_count', 0)
-    st.session_state.campaign_running = shared.get('campaign_running', False)
     st.session_state.campaign_error = shared.get('campaign_error')
 
 # ============================================================================
@@ -266,7 +281,6 @@ async def run_campaign_async(agent, campaign_input, config, shared_state: Shared
         shared_state.append_log("Starting campaign execution...", "info")
         shared_state.append_event("start", "system", "🚀 Campaign started", {})
         shared_state.set('current_phase', "Initializing")
-        shared_state.set('campaign_running', True)
         
         async for graph_name, stream_mode, event in agent.astream(
             campaign_input,
@@ -341,18 +355,12 @@ async def run_campaign_async(agent, campaign_input, config, shared_state: Shared
         
         shared_state.append_log("Campaign completed successfully!", "success")
         shared_state.append_event("completion", "system", "🎉 Campaign completed", {})
-        shared_state.update({
-            'current_phase': "Completed",
-            'campaign_running': False
-        })
+        shared_state.set('current_phase', "Completed")
         
     except Exception as e:
         shared_state.append_log(f"Campaign error: {str(e)}", "error")
         shared_state.append_event("error", "system", f"❌ Error: {str(e)}", {})
-        shared_state.update({
-            'campaign_error': str(e),
-            'campaign_running': False
-        })
+        shared_state.set('campaign_error', str(e))
 
 def run_campaign_thread(agent, campaign_input, config, shared_state: SharedState):
     """Run campaign in background thread"""
@@ -361,6 +369,8 @@ def run_campaign_thread(agent, campaign_input, config, shared_state: SharedState
     try:
         loop.run_until_complete(run_campaign_async(agent, campaign_input, config, shared_state))
     finally:
+        # Mark as not running when thread completes
+        st.session_state.campaign_running = False
         loop.close()
 
 # ============================================================================
@@ -615,8 +625,8 @@ with st.sidebar:
             
             # Reset shared state
             st.session_state.shared_state = SharedState()
-            st.session_state.shared_state.set('campaign_running', True)
             st.session_state.max_iterations = max_iterations
+            st.session_state.campaign_running = True  # ← Set in st.session_state for widgets
             
             # Run in background thread
             config = {"recursion_limit": 200}
@@ -633,20 +643,21 @@ with st.sidebar:
     
     with col2:
         if st.button("⏹️ STOP", use_container_width=True, disabled=not st.session_state.campaign_running):
-            st.session_state.shared_state.set('campaign_running', False)
+            st.session_state.campaign_running = False
             st.session_state.shared_state.append_log("Campaign stopped by user", "warning")
             st.rerun()
     
     if st.button("🗑️ Clear All", use_container_width=True):
         st.session_state.shared_state = SharedState()
         st.session_state.agent = None
+        st.session_state.campaign_running = False
         st.rerun()
 
 # ============================================================================
 # MAIN DASHBOARD
 # ============================================================================
 
-# Sync from shared state
+# Sync from shared state BEFORE rendering
 sync_from_shared_state()
 
 # Header
@@ -725,4 +736,4 @@ if st.session_state.campaign_running:
 
 st.divider()
 last_update = st.session_state.shared_state.get('last_update', datetime.now())
-st.caption(f"Marketing Campaign System v3.1 | Last update: {last_update.strftime('%H:%M:%S')}")
+st.caption(f"Marketing Campaign System v3.2 | Last update: {last_update.strftime('%H:%M:%S')}")
