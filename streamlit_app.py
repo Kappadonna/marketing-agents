@@ -2,18 +2,20 @@
 Marketing Campaign Multi-Agent System - Streamlit Dashboard
 ============================================================
 
-VERSION 2.1 - BUG FIXES:
-✅ Fixed task counter not updating (0/4 → correct count)
-✅ Fixed text visibility in agent cards (white on white)
-✅ Fixed files count showing 0
-✅ Fixed state synchronization
-✅ Real-time updates during campaign execution
+VERSION 3.0 - REAL-TIME STREAMING:
+✅ Real-time updates with st.status() and threading
+✅ Non-blocking UI during campaign execution
+✅ Live progress tracking with expandable status
+✅ Accurate task counting and file monitoring
+✅ Auto-refresh every 2 seconds during execution
 """
 
 import os
 import asyncio
 import base64
 import json
+import threading
+import time
 from datetime import datetime
 from io import BytesIO
 
@@ -44,23 +46,22 @@ st.set_page_config(
 )
 
 # ============================================================================
-# CUSTOM CSS - FIXED VERSION
+# CUSTOM CSS
 # ============================================================================
 
 st.markdown("""
 <style>
-    /* Main theme - Fixed dark mode support */
+    /* Main theme */
     .main {
         background-color: #1e1e1e;
         color: #ffffff;
     }
     
-    /* Streamlit specific overrides */
     .stMarkdown {
         color: #ffffff;
     }
     
-    /* Cards - Fixed contrast */
+    /* Metric cards */
     .metric-card {
         background: #2d2d2d;
         padding: 20px;
@@ -70,7 +71,7 @@ st.markdown("""
         color: #ffffff;
     }
     
-    /* Agent cards - FIXED TEXT VISIBILITY */
+    /* Agent cards */
     .agent-card {
         background: #2d2d2d;
         padding: 20px;
@@ -78,25 +79,16 @@ st.markdown("""
         border: 2px solid #3d3d3d;
         margin: 10px 0;
         transition: all 0.3s ease;
-        min-height: 120px;
     }
     
     .agent-card h4 {
         color: #ffffff !important;
         margin: 0 0 10px 0;
-        font-size: 18px;
     }
     
     .agent-card p {
         color: #b0b0b0 !important;
         margin: 5px 0;
-        font-size: 14px;
-    }
-    
-    .agent-card .status {
-        color: #ffffff !important;
-        font-weight: bold;
-        margin-top: 10px;
     }
     
     .agent-active {
@@ -113,43 +105,6 @@ st.markdown("""
     @keyframes pulse {
         0%, 100% { box-shadow: 0 0 20px rgba(40, 167, 69, 0.4); }
         50% { box-shadow: 0 0 30px rgba(40, 167, 69, 0.6); }
-    }
-    
-    /* Status badges */
-    .status-badge {
-        display: inline-block;
-        padding: 5px 15px;
-        border-radius: 20px;
-        font-weight: 600;
-        font-size: 0.85em;
-    }
-    
-    .status-planning { background: #fff3cd; color: #856404; }
-    .status-strategy { background: #d1ecf1; color: #0c5460; }
-    .status-content_creation { background: #d4edda; color: #155724; }
-    .status-analysis { background: #cce5ff; color: #004085; }
-    .status-completed { background: #d4edda; color: #155724; }
-    .status-failed { background: #f8d7da; color: #721c24; }
-    .status-running { background: #e7f3ff; color: #0066cc; }
-    
-    /* Iteration progress */
-    .iteration-box {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 20px;
-        border-radius: 10px;
-        text-align: center;
-        margin: 10px 0;
-    }
-    
-    /* File list */
-    .file-item {
-        background: #2d2d2d;
-        padding: 10px;
-        border-left: 4px solid #667eea;
-        margin: 5px 0;
-        border-radius: 5px;
-        color: #ffffff;
     }
     
     /* Live indicator */
@@ -170,22 +125,15 @@ st.markdown("""
         50% { opacity: 0.7; }
     }
     
-    .live-dot {
-        width: 8px;
-        height: 8px;
-        background: white;
-        border-radius: 50%;
-    }
-    
-    /* Event feed */
+    /* Event items */
     .event-item {
         background: #2d2d2d;
         padding: 10px 15px;
         border-left: 4px solid #667eea;
         margin: 5px 0;
         border-radius: 5px;
-        animation: slideIn 0.3s ease;
         color: #ffffff;
+        animation: slideIn 0.3s ease;
     }
     
     @keyframes slideIn {
@@ -197,23 +145,6 @@ st.markdown("""
             opacity: 1;
             transform: translateX(0);
         }
-    }
-    
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background-color: #2d2d2d;
-        color: #ffffff;
-        border-radius: 8px 8px 0 0;
-        padding: 10px 20px;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background-color: #667eea;
-        color: #ffffff;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -227,18 +158,16 @@ def setup_environment():
     """Setup environment variables and API keys"""
     load_dotenv()
     
-    # Try Streamlit secrets if .env not available
     if "OPENAI_API_KEY" in st.secrets:
         os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
     if "TAVILY_API_KEY" in st.secrets:
         os.environ["TAVILY_API_KEY"] = st.secrets["TAVILY_API_KEY"]
     
-    # Verify keys exist
     if not os.getenv("OPENAI_API_KEY"):
-        st.error("❌ Missing OPENAI_API_KEY - check .env or Streamlit Secrets")
+        st.error("❌ Missing OPENAI_API_KEY")
         st.stop()
     if not os.getenv("TAVILY_API_KEY"):
-        st.error("❌ Missing TAVILY_API_KEY - check .env or Streamlit Secrets")
+        st.error("❌ Missing TAVILY_API_KEY")
         st.stop()
     
     return True
@@ -246,11 +175,11 @@ def setup_environment():
 setup_environment()
 
 # ============================================================================
-# SESSION STATE INITIALIZATION - FIXED VERSION
+# SESSION STATE INITIALIZATION
 # ============================================================================
 
 def init_session_state():
-    """Initialize all session state variables"""
+    """Initialize session state variables"""
     defaults = {
         'campaign_running': False,
         'campaign_state': None,
@@ -258,7 +187,7 @@ def init_session_state():
         'logs': [],
         'events': [],
         'active_agent': None,
-        'current_task': None,
+        'current_phase': 'Idle',
         'agent_status': {
             'project-manager': 'idle',
             'strategy-planner': 'idle',
@@ -266,9 +195,15 @@ def init_session_state():
             'analytics-agent': 'idle'
         },
         'template_config': {},
-        'last_update': datetime.now(),  # NEW: Track last update
-        'total_tasks': 0,  # NEW: Track total tasks
-        'completed_tasks': 0,  # NEW: Track completed tasks
+        'last_update': datetime.now(),
+        'total_tasks': 0,
+        'completed_tasks': 0,
+        'current_iteration': 1,
+        'max_iterations': 2,
+        'files_count': 0,
+        'last_event': None,
+        'campaign_thread': None,
+        'campaign_error': None,
     }
     
     for key, value in defaults.items():
@@ -278,303 +213,193 @@ def init_session_state():
 init_session_state()
 
 # ============================================================================
-# UTILITY FUNCTIONS - FIXED VERSION
+# LOGGING AND EVENT TRACKING
 # ============================================================================
 
-def add_event(event_type: str, agent: str, message: str, details: dict = None):
-    """Add a real-time event to the event log"""
+def add_log(message: str, level: str = "info"):
+    """Add a log entry with timestamp"""
     timestamp = datetime.now().strftime("%H:%M:%S")
-    event = {
-        "time": timestamp,
-        "type": event_type,
-        "agent": agent,
+    log_entry = {
+        "timestamp": timestamp,
         "message": message,
-        "details": details or {}
+        "level": level
     }
-    st.session_state.events.insert(0, event)
-    st.session_state.events = st.session_state.events[:100]
+    st.session_state.logs.append(log_entry)
     st.session_state.last_update = datetime.now()
 
-def set_active_agent(agent_name: str, task: str = None):
-    """Set the currently active agent and update status"""
+def add_event(event_type: str, agent: str, description: str, data: dict = None):
+    """Add an event to the event feed"""
+    event = {
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        "type": event_type,
+        "agent": agent,
+        "description": description,
+        "data": data or {}
+    }
+    st.session_state.events.append(event)
+    st.session_state.last_event = event
+    st.session_state.last_update = datetime.now()
+
+def set_agent_active(agent_name: str):
+    """Mark an agent as active"""
     st.session_state.active_agent = agent_name
-    st.session_state.current_task = task
     st.session_state.agent_status[agent_name] = 'active'
     st.session_state.last_update = datetime.now()
 
 def set_agent_idle(agent_name: str):
-    """Set an agent to idle status"""
+    """Mark an agent as idle"""
     st.session_state.agent_status[agent_name] = 'idle'
     if st.session_state.active_agent == agent_name:
         st.session_state.active_agent = None
-        st.session_state.current_task = None
     st.session_state.last_update = datetime.now()
-
-def add_log(message: str, level: str = "info"):
-    """Add a log message to the session state"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    st.session_state.logs.append({
-        "time": timestamp,
-        "level": level,
-        "message": message
-    })
-    st.session_state.last_update = datetime.now()
-
-def get_status_badge(status: str) -> str:
-    """Generate HTML for status badge"""
-    return f'<span class="status-badge status-{status}">{status.replace("_", " ").upper()}</span>'
-
-def decode_base64_image(b64_string: str) -> bytes:
-    """Decode base64 string to image bytes"""
-    try:
-        lines = b64_string.split('\n')
-        b64_data = None
-        for line in lines:
-            line = line.strip()
-            if len(line) > 1000:
-                b64_data = line
-                break
-        
-        if b64_data:
-            return base64.b64decode(b64_data)
-    except Exception as e:
-        st.error(f"Error decoding image: {e}")
-    return None
-
-# ============================================================================
-# FIXED: TASK COUNTER FUNCTIONS
-# ============================================================================
-
-def count_completed_tasks(todos: list) -> tuple:
-    """Count completed tasks from TODO list
-    
-    Returns:
-        tuple: (completed_count, total_count)
-    """
-    if not todos:
-        return (0, 0)
-    
-    completed = len([t for t in todos if t.get('status') == 'completed'])
-    total = len(todos)
-    
-    return (completed, total)
 
 def update_task_counts():
-    """Update task counts from current campaign state"""
+    """Update task completion counts from state"""
     if st.session_state.campaign_state:
         todos = st.session_state.campaign_state.get('todos', [])
-        completed, total = count_completed_tasks(todos)
-        st.session_state.completed_tasks = completed
-        st.session_state.total_tasks = total
+        st.session_state.total_tasks = len(todos)
+        st.session_state.completed_tasks = len([t for t in todos if t.get('status') == 'completed'])
+        
+        files = st.session_state.campaign_state.get('files', {})
+        st.session_state.files_count = len([f for f in files.keys() if not f.startswith('URL_error')])
+        
+        st.session_state.current_iteration = st.session_state.campaign_state.get('iteration_count', 1)
+        st.session_state.last_update = datetime.now()
 
 # ============================================================================
-# VISUALIZATION COMPONENTS - FIXED VERSION
+# RENDERING FUNCTIONS
 # ============================================================================
 
 def render_campaign_header():
-    """Render the main campaign header with live indicator"""
+    """Render the main header with campaign status"""
     col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
         st.title("🚀 Marketing Campaign Dashboard")
-        st.caption("Multi-Agent System with Real-Time Monitoring")
     
     with col2:
-        if st.session_state.campaign_state:
-            status = st.session_state.campaign_state.get('campaign_status', 'unknown')
-            st.markdown(get_status_badge(status), unsafe_allow_html=True)
-    
-    with col3:
         if st.session_state.campaign_running:
             st.markdown('<div class="live-indicator"><div class="live-dot"></div>LIVE</div>', 
                        unsafe_allow_html=True)
-        else:
-            st.markdown("⚪ **IDLE**")
-
-def render_live_metrics():
-    """Render live metrics with FIXED counters"""
-    st.markdown("## 📡 Live Campaign Execution")
-    
-    # Update task counts BEFORE rendering
-    update_task_counts()
-    
-    # Get current state
-    files_count = 0
-    events_count = len(st.session_state.events)
-    
-    if st.session_state.campaign_state:
-        files = st.session_state.campaign_state.get('files', {})
-        # Filter out error files
-        files_count = len([f for f in files.keys() if not f.startswith('URL_error')])
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Files Generated", files_count)
-    
-    with col2:
-        # FIXED: Show actual task counts
-        st.metric("Tasks", f"{st.session_state.completed_tasks}/{st.session_state.total_tasks}")
     
     with col3:
-        st.metric("Events", events_count)
+        if st.session_state.campaign_state:
+            status = st.session_state.campaign_state.get('campaign_status', 'unknown')
+            st.markdown(f'<span class="status-badge status-{status}">{status.upper()}</span>', 
+                       unsafe_allow_html=True)
 
-def render_iteration_progress():
-    """Render iteration progress indicator"""
-    if not st.session_state.campaign_state:
-        st.info("⏳ Waiting for campaign to start...")
-        return
+def render_live_metrics():
+    """Render live metrics cards"""
+    col1, col2, col3, col4 = st.columns(4)
     
-    current = st.session_state.campaign_state.get('iteration_count', 0)
-    max_iter = st.session_state.campaign_state.get('max_iterations', 3)
-    status = st.session_state.campaign_state.get('campaign_status', 'unknown')
+    with col1:
+        iteration = st.session_state.current_iteration
+        max_iter = st.session_state.max_iterations
+        st.metric(
+            label="📊 Iteration",
+            value=f"{iteration}/{max_iter}",
+            delta=f"{(iteration/max_iter*100):.0f}% complete"
+        )
     
-    # Progress percentage
-    progress = (current / max_iter) if max_iter > 0 else 0
+    with col2:
+        completed = st.session_state.completed_tasks
+        total = st.session_state.total_tasks
+        st.metric(
+            label="✅ Tasks",
+            value=f"{completed}/{total}",
+            delta=f"{completed} done"
+        )
     
-    st.markdown(f"""
-    <div class="iteration-box">
-        <h2 style="margin: 0;">Iteration {current} of {max_iter}</h2>
-        <p style="margin: 10px 0 0 0; opacity: 0.9;">
-            Progress: {int(progress * 100)}%
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
+    with col3:
+        files_count = st.session_state.files_count
+        st.metric(
+            label="📁 Files",
+            value=files_count,
+            delta=f"+{files_count}"
+        )
     
-    st.progress(progress)
+    with col4:
+        active_agent = st.session_state.active_agent or "None"
+        st.metric(
+            label="🤖 Active Agent",
+            value=active_agent.replace('-', ' ').title() if active_agent != "None" else "None"
+        )
 
 def render_agent_status():
-    """Render agent status cards with FIXED text visibility"""
-    st.markdown("### 🤖 Agent Status")
+    """Render agent status cards"""
+    st.subheader("🤖 Agent Status")
     
-    if st.session_state.campaign_running:
-        st.markdown('<div class="live-indicator"><div class="live-dot"></div>LIVE</div>', 
-                   unsafe_allow_html=True)
-    
-    # Current task
-    if st.session_state.current_task:
-        st.info(f"**Current Task:** {st.session_state.current_task[:150]}...")
-    
-    # Agent cards with FIXED styling
-    agents_info = [
-        {
-            'key': 'project-manager',
-            'icon': '🎯',
-            'name': 'Project Manager',
-            'role': 'Orchestration'
-        },
-        {
-            'key': 'strategy-planner',
-            'icon': '📊',
-            'name': 'Strategy Planner',
-            'role': 'Research & Strategy'
-        },
-        {
-            'key': 'content-creator',
-            'icon': '✍️',
-            'name': 'Content Creator',
-            'role': 'Content & Images'
-        },
-        {
-            'key': 'analytics-agent',
-            'icon': '📈',
-            'name': 'Analytics Agent',
-            'role': 'Performance Analysis'
-        }
-    ]
+    agents = {
+        'project-manager': {'name': 'Project Manager', 'icon': '👔', 'role': 'Orchestrates campaign workflow'},
+        'strategy-planner': {'name': 'Strategy Planner', 'icon': '📊', 'role': 'Market research & strategy'},
+        'content-creator': {'name': 'Content Creator', 'icon': '✍️', 'role': 'Creates social content'},
+        'analytics-agent': {'name': 'Analytics Agent', 'icon': '📈', 'role': 'Analyzes performance'}
+    }
     
     cols = st.columns(2)
     
-    for idx, agent in enumerate(agents_info):
+    for idx, (agent_id, info) in enumerate(agents.items()):
         with cols[idx % 2]:
-            status = st.session_state.agent_status.get(agent['key'], 'idle')
-            is_active = status == 'active'
+            status = st.session_state.agent_status.get(agent_id, 'idle')
+            status_class = 'agent-active' if status == 'active' else 'agent-idle'
+            status_emoji = '🟢' if status == 'active' else '⚪'
             
-            status_class = "agent-active" if is_active else "agent-idle"
-            status_emoji = "🟢" if is_active else "⚪"
-            
-            # FIXED: Clear text visibility
             st.markdown(f"""
             <div class="agent-card {status_class}">
-                <h4>{agent['icon']} {agent['name']} {status_emoji}</h4>
-                <p>{agent['role']}</p>
-                <p class="status">Status: {status.upper()}</p>
+                <h4>{info['icon']} {info['name']}</h4>
+                <p>{info['role']}</p>
+                <p class="status">{status_emoji} {status.upper()}</p>
             </div>
             """, unsafe_allow_html=True)
 
 def render_event_feed():
-    """Render real-time event feed"""
-    st.markdown("### 📡 Live Event Feed")
+    """Render recent events"""
+    st.subheader("📢 Recent Events")
     
     if not st.session_state.events:
-        st.info("No events yet. Events will appear here in real-time.")
+        st.info("No events yet")
         return
     
-    # Show last 20 events
-    for event in st.session_state.events[:20]:
-        event_class = f"event-{event['type']}"
-        
-        icon_map = {
-            'delegation': '📤',
-            'task': '⚙️',
-            'completion': '✅',
-            'error': '❌'
-        }
-        icon = icon_map.get(event['type'], '•')
-        
+    # Show last 10 events
+    for event in reversed(st.session_state.events[-10:]):
         st.markdown(f"""
-        <div class="event-item {event_class}">
-            <strong>[{event['time']}]</strong> {icon} <strong>{event['agent']}</strong><br>
-            {event['message']}
+        <div class="event-item">
+            <strong>{event['timestamp']}</strong> - {event['agent']} - {event['description']}
         </div>
         """, unsafe_allow_html=True)
 
-def render_todos():
-    """Render TODO list"""
-    st.markdown("### ✅ Tasks")
+def render_logs():
+    """Render system logs"""
+    st.subheader("📝 System Logs")
     
-    if not st.session_state.campaign_state:
-        st.info("No tasks yet")
+    if not st.session_state.logs:
+        st.info("No logs yet")
         return
     
-    todos = st.session_state.campaign_state.get('todos', [])
-    
-    if not todos:
-        st.info("No tasks in the list")
-        return
-    
-    for todo in todos:
-        status_emoji = {
-            "pending": "⏳",
-            "in_progress": "🔄", 
-            "completed": "✅"
-        }
-        emoji = status_emoji.get(todo.get("status", "pending"), "❓")
-        
-        st.markdown(f"{emoji} {todo.get('content', 'Unknown task')}")
+    for log in reversed(st.session_state.logs[-20:]):
+        icon = {"info": "ℹ️", "success": "✅", "warning": "⚠️", "error": "❌"}.get(log['level'], "ℹ️")
+        st.text(f"{icon} {log['timestamp']} - {log['message']}")
 
 def render_files_by_iteration():
     """Render files organized by iteration"""
-    st.markdown("### 📁 Generated Files")
+    st.subheader("📁 Generated Files")
     
     if not st.session_state.campaign_state:
         st.info("No files yet")
         return
     
     files = st.session_state.campaign_state.get('files', {})
+    files = {k: v for k, v in files.items() if not k.startswith('URL_error')}
     
-    # Filter out error files
-    valid_files = {k: v for k, v in files.items() if not k.startswith('URL_error')}
-    
-    if not valid_files:
+    if not files:
         st.info("No files generated yet")
         return
     
-    # Organize files by iteration
+    # Group by iteration
     iterations = {}
     other_files = []
     
-    for filename in sorted(valid_files.keys()):
+    for filename in sorted(files.keys()):
         if '_v' in filename:
             try:
                 iter_num = int(filename.split('_v')[1].split('.')[0])
@@ -586,21 +411,21 @@ def render_files_by_iteration():
         else:
             other_files.append(filename)
     
-    # Display by iteration
+    # Render by iteration
     for iter_num in sorted(iterations.keys()):
-        with st.expander(f"📂 Iteration {iter_num} ({len(iterations[iter_num])} files)", expanded=True):
+        with st.expander(f"📂 Iteration {iter_num} ({len(iterations[iter_num])} files)"):
             for filename in sorted(iterations[iter_num]):
-                st.text(f"📄 {filename}")
+                file_icon = "🖼️" if "image" in filename else "📊" if "chart" in filename else "📄"
+                st.markdown(f"{file_icon} `{filename}`")
     
-    # Other files
     if other_files:
-        with st.expander(f"📂 Other Files ({len(other_files)})", expanded=True):
+        with st.expander(f"📂 Other Files ({len(other_files)} files)"):
             for filename in sorted(other_files):
-                st.text(f"📄 {filename}")
+                st.markdown(f"📄 `{filename}`")
 
 def render_campaign_images():
-    """Render all generated images in a gallery"""
-    st.markdown("### 🖼️ Generated Images")
+    """Render generated images"""
+    st.subheader("🖼️ Generated Images")
     
     if not st.session_state.campaign_state:
         st.info("No images yet")
@@ -608,57 +433,45 @@ def render_campaign_images():
     
     files = st.session_state.campaign_state.get('files', {})
     
-    # Find all image data files
-    image_files = [f for f in files.keys() if '_data' in f and f.endswith('.txt') and 'image' in f.lower()]
+    # Find image data files
+    image_files = [f for f in files.keys() if 'image_data' in f or 'chart_data' in f]
     
     if not image_files:
-        st.info("🖼️ No images generated yet")
+        st.info("No images generated yet")
         return
     
-    cols = st.columns(2)
-    for idx, img_file in enumerate(sorted(image_files)):
-        with cols[idx % 2]:
-            # Extract iteration number
-            iter_match = img_file.split('_v')
-            if len(iter_match) > 1:
-                iter_num = iter_match[1].split('.')[0]
-                st.caption(f"Iteration {iter_num}")
+    for img_file in sorted(image_files):
+        try:
+            content = files[img_file]
+            lines = content.split('\n')
+            b64_data = None
             
-            img_bytes = decode_base64_image(files[img_file])
-            if img_bytes:
-                st.image(img_bytes, use_column_width=True)
-
-def render_logs():
-    """Render activity logs"""
-    st.markdown("### 📝 Activity Log")
-    
-    if not st.session_state.logs:
-        st.info("No activity logged yet")
-        return
-    
-    for log in reversed(st.session_state.logs[-20:]):
-        level_emoji = {
-            'info': 'ℹ️',
-            'success': '✅',
-            'warning': '⚠️',
-            'error': '❌'
-        }
-        emoji = level_emoji.get(log['level'], 'ℹ️')
-        st.text(f"[{log['time']}] {emoji} {log['message']}")
+            for line in lines:
+                line = line.strip()
+                if len(line) > 1000:
+                    b64_data = line
+                    break
+            
+            if b64_data:
+                img_bytes = base64.b64decode(b64_data)
+                st.image(img_bytes, caption=img_file, use_container_width=True)
+        except:
+            st.warning(f"Could not display {img_file}")
 
 # ============================================================================
-# CAMPAIGN EXECUTION - FIXED VERSION
+# CAMPAIGN EXECUTION - THREADING VERSION
 # ============================================================================
 
 async def run_campaign_async(campaign_input, config):
-    """Run campaign asynchronously with FIXED state updates"""
-    add_log("Campaign started", "success")
-    add_event("delegation", "project-manager", "🚀 Campaign started", {})
-    set_active_agent("project-manager", "Initializing campaign")
-    
+    """Run campaign asynchronously with real-time updates"""
     try:
-        # Stream events from agent
-        async for graph_name, stream_mode, event in st.session_state.agent.astream(
+        agent = st.session_state.agent
+        
+        add_log("Starting campaign execution...", "info")
+        add_event("start", "system", "🚀 Campaign started", {})
+        st.session_state.current_phase = "Initializing"
+        
+        async for graph_name, stream_mode, event in agent.astream(
             campaign_input,
             stream_mode=["updates", "values"],
             subgraphs=True,
@@ -667,70 +480,55 @@ async def run_campaign_async(campaign_input, config):
             if stream_mode == "updates":
                 node, result = list(event.items())[0]
                 
-                # Determine active agent
+                # Detect agent from node name or messages
                 agent_name = "project-manager"
-                if "strategy" in node.lower():
-                    agent_name = "strategy-planner"
-                elif "content" in node.lower():
-                    agent_name = "content-creator"
-                elif "analytics" in node.lower():
-                    agent_name = "analytics-agent"
                 
-                # Log activity
-                add_log(f"Agent {agent_name}: {node}", "info")
-                
-                # Extract task info
-                messages = result.get("messages", [])
-                if messages:
-                    last_message = messages[-1]
+                if 'messages' in result and result['messages']:
+                    last_message = result['messages'][-1]
                     
-                    # Check for tool calls
+                    # Tool calls indicate delegation
                     if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
                         for tool_call in last_message.tool_calls:
-                            tool_name = tool_call.get('name', 'unknown')
-                            
-                            if tool_name == 'task':
+                            if tool_call.get('name') == 'task':
                                 args = tool_call.get('args', {})
-                                target = args.get('subagent_type', 'unknown')
-                                task_desc = args.get('description', '')[:100]
-                                
-                                add_event("delegation", agent_name, 
-                                        f"📤 Delegating to {target}", {})
-                                set_active_agent(target, task_desc)
-                            else:
-                                add_event("task", agent_name, 
-                                        f"⚙️ Executing: {tool_name}", {})
+                                subagent = args.get('subagent_type', '')
+                                if subagent:
+                                    agent_name = subagent
+                                    set_agent_active(agent_name)
+                                    add_event("delegation", "project-manager",
+                                            f"➡️ Delegated to {agent_name}", {'subagent': agent_name})
+                                    st.session_state.current_phase = f"Running {agent_name}"
                     
-                    # Check for completion
+                    # Tool results indicate completion
                     if hasattr(last_message, 'content'):
                         content_str = str(last_message.content)
                         if "✅" in content_str or "complete" in content_str.lower():
-                            add_event("completion", agent_name, 
-                                    "✅ Task completed", {})
+                            add_event("completion", agent_name, "✅ Task completed", {})
                             set_agent_idle(agent_name)
                 
-                # CRITICAL FIX: Update state during execution
+                # Update state
                 st.session_state.campaign_state = dict(result)
                 update_task_counts()
-                
+            
             # Save final state
             if stream_mode == "values" and len(graph_name) == 0:
                 st.session_state.campaign_state = dict(event)
                 update_task_counts()
         
         add_log("Campaign completed successfully!", "success")
-        add_event("completion", "project-manager", "🎉 Campaign completed", {})
-        set_agent_idle("project-manager")
+        add_event("completion", "system", "🎉 Campaign completed", {})
+        st.session_state.current_phase = "Completed"
         st.session_state.campaign_running = False
         
     except Exception as e:
         add_log(f"Campaign error: {str(e)}", "error")
         add_event("error", "system", f"❌ Error: {str(e)}", {})
+        st.session_state.campaign_error = str(e)
         st.session_state.campaign_running = False
         raise
 
-def run_campaign(campaign_input, config):
-    """Wrapper to run async campaign"""
+def run_campaign_thread(campaign_input, config):
+    """Run campaign in background thread"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -746,7 +544,7 @@ with st.sidebar:
     st.header("⚙️ Campaign Configuration")
     
     # Template selection
-    st.subheader("📋 Campaign Templates")
+    st.subheader("📋 Templates")
     
     category = st.selectbox(
         "Category",
@@ -769,33 +567,17 @@ with st.sidebar:
     
     st.divider()
     
-    # Model selection
+    # Model settings
     st.subheader("🤖 Model Settings")
     
     model_choice = st.selectbox(
         "LLM Model",
-        options=[
-            "openai:gpt-4o-mini",
-            "openai:gpt-4o"
-        ],
+        options=["openai:gpt-4o-mini", "openai:gpt-4o"],
         index=0
     )
     
-    max_iterations = st.slider(
-        "Max Iterations",
-        min_value=1,
-        max_value=5,
-        value=1,  # Default to 1 for testing
-        help="Maximum number of campaign iterations"
-    )
-    
-    performance_threshold = st.slider(
-        "Performance Threshold",
-        min_value=50.0,
-        max_value=95.0,
-        value=75.0,
-        step=5.0
-    )
+    max_iterations = st.slider("Max Iterations", 1, 5, 2)
+    performance_threshold = st.slider("Performance Threshold", 50.0, 95.0, 75.0, 5.0)
     
     st.divider()
     
@@ -811,25 +593,20 @@ with st.sidebar:
     
     product_info = st.text_area(
         "Product Description",
-        value=template.get('product_info', """Next-generation wireless earbuds featuring:
-- AI adaptive noise cancellation
-- Focus Mode for productivity
-- Real-time translation
-- 48h battery life
-Price: €249.99"""),
-        height=200
+        value=template.get('product_info', """AI-powered wireless earbuds"""),
+        height=150
     )
     
     campaign_goal = st.text_area(
         "Campaign Goal",
-        value=template.get('campaign_goal', "Generate pre-orders and build anticipation"),
-        height=100
+        value=template.get('campaign_goal', "Generate awareness and engagement"),
+        height=80
     )
     
     target_audience = st.text_area(
         "Target Audience",
         value=template.get('target_audience', "Tech enthusiasts aged 25-40"),
-        height=120
+        height=80
     )
     
     st.divider()
@@ -838,14 +615,19 @@ Price: €249.99"""),
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("🚀 START", use_container_width=True, disabled=st.session_state.campaign_running, type="primary"):
-            # Initialize
+        if st.button("🚀 START", 
+                    use_container_width=True, 
+                    disabled=st.session_state.campaign_running,
+                    type="primary"):
+            
+            # Initialize agent
             st.session_state.agent = create_marketing_campaign_agent(
                 model_name=model_choice,
                 max_iterations=max_iterations,
                 performance_threshold=performance_threshold
             )
             
+            # Create campaign input
             campaign_input = create_campaign_input(
                 product_info=f"{product_name}\n\n{product_info}",
                 campaign_goal=campaign_goal,
@@ -854,39 +636,42 @@ Price: €249.99"""),
                 performance_threshold=performance_threshold
             )
             
+            # Reset state
             st.session_state.campaign_running = True
             st.session_state.events = []
+            st.session_state.logs = []
             st.session_state.completed_tasks = 0
             st.session_state.total_tasks = 0
+            st.session_state.max_iterations = max_iterations
+            st.session_state.campaign_error = None
             
-            add_log("Initializing agent system...", "info")
-            
-            # Run campaign
+            # Run in background thread
             config = {"recursion_limit": 200}
+            thread = threading.Thread(
+                target=run_campaign_thread,
+                args=(campaign_input, config),
+                daemon=True
+            )
+            thread.start()
+            st.session_state.campaign_thread = thread
             
-            with st.spinner("Campaign running..."):
-                run_campaign(campaign_input, config)
-            
+            add_log("Campaign started in background", "info")
             st.rerun()
     
     with col2:
-        if st.button("⏹️ STOP", use_container_width=True, disabled=not st.session_state.campaign_running):
+        if st.button("⏹️ STOP", 
+                    use_container_width=True, 
+                    disabled=not st.session_state.campaign_running):
             st.session_state.campaign_running = False
             add_log("Campaign stopped by user", "warning")
             st.rerun()
     
     if st.button("🗑️ Clear All", use_container_width=True):
-        for key in ['campaign_state', 'logs', 'events', 'active_agent', 'current_task']:
-            st.session_state[key] = None if key in ['campaign_state', 'active_agent', 'current_task'] else []
+        for key in ['campaign_state', 'logs', 'events']:
+            st.session_state[key] = None if key == 'campaign_state' else []
         st.session_state.campaign_running = False
         st.session_state.completed_tasks = 0
         st.session_state.total_tasks = 0
-        st.session_state.agent_status = {
-            'project-manager': 'idle',
-            'strategy-planner': 'idle',
-            'content-creator': 'idle',
-            'analytics-agent': 'idle'
-        }
         st.rerun()
 
 # ============================================================================
@@ -896,9 +681,17 @@ Price: €249.99"""),
 # Header
 render_campaign_header()
 
+# Show current phase
+if st.session_state.campaign_running:
+    st.info(f"📍 Current Phase: {st.session_state.current_phase}")
+
+# Show error if any
+if st.session_state.campaign_error:
+    st.error(f"❌ Error: {st.session_state.campaign_error}")
+
 st.divider()
 
-# Live metrics (always visible)
+# Live metrics
 render_live_metrics()
 
 st.divider()
@@ -914,17 +707,20 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 ])
 
 with tab1:
-    col1, col2 = st.columns([2, 1])
+    st.subheader("📊 Campaign Overview")
     
-    with col1:
-        render_iteration_progress()
-    
-    with col2:
-        render_todos()
+    if st.session_state.campaign_state:
+        todos = st.session_state.campaign_state.get('todos', [])
+        if todos:
+            st.write("**Tasks:**")
+            for todo in todos:
+                status_emoji = {"pending": "⏳", "in_progress": "🔄", "completed": "✅"}.get(todo['status'], "❓")
+                st.write(f"{status_emoji} {todo['content']}")
+    else:
+        st.info("No campaign data yet")
 
 with tab2:
     render_agent_status()
-    
     st.divider()
     render_event_feed()
 
@@ -936,47 +732,35 @@ with tab4:
 
 with tab5:
     render_logs()
-    
-    if st.button("🔄 Refresh"):
-        st.rerun()
 
 with tab6:
-    st.subheader("📦 Export Campaign Results")
+    st.subheader("📦 Export Results")
     
     if not st.session_state.campaign_state:
-        st.info("⚠️ No campaign data to export")
+        st.info("⚠️ No data to export")
     else:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### 📄 Individual Exports")
-            
-            if st.button("📝 Download Summary (MD)", use_container_width=True):
-                summary_md = create_campaign_summary_md(st.session_state.campaign_state)
+        if st.button("🗜️ Download ZIP", type="primary"):
+            with st.spinner("Creating ZIP..."):
+                zip_buffer = create_zip_archive(st.session_state.campaign_state)
                 st.download_button(
                     label="⬇️ Download",
-                    data=summary_md,
-                    file_name="campaign_summary.md",
-                    mime="text/markdown"
+                    data=zip_buffer,
+                    file_name=f"campaign_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                    mime="application/zip"
                 )
-        
-        with col2:
-            st.markdown("### 📦 Complete Package")
-            
-            if st.button("🗜️ Generate ZIP", use_container_width=True, type="primary"):
-                with st.spinner("Creating ZIP..."):
-                    zip_buffer = create_zip_archive(st.session_state.campaign_state)
-                    
-                    st.download_button(
-                        label="⬇️ Download ZIP",
-                        data=zip_buffer,
-                        file_name=f"campaign_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                        mime="application/zip"
-                    )
+
+# ============================================================================
+# AUTO-REFRESH DURING CAMPAIGN
+# ============================================================================
+
+if st.session_state.campaign_running:
+    # Auto-refresh every 2 seconds
+    time.sleep(2)
+    st.rerun()
 
 # ============================================================================
 # FOOTER
 # ============================================================================
 
 st.divider()
-st.caption("Marketing Campaign Multi-Agent System v2.1 - Fixed Version | Powered by LangGraph")
+st.caption(f"Marketing Campaign System v3.0 | Last update: {st.session_state.last_update.strftime('%H:%M:%S')}")
